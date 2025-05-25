@@ -5,7 +5,7 @@ import axios from 'axios';
 const AuthContext = createContext();
 
 // API base URL - should match your server
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+const API_URL = process.env.REACT_APP_API_URL || 'https://codearena-u4dp.onrender.com';
 
 export const AuthProvider = ({ children }) => {
   const [currentUser, setCurrentUser] = useState(null);

@@ -95,7 +95,7 @@ const Dashboard = () => {
 
   const getCurrentUser = async () => {
     try {
-      const response = await axios.get("http://localhost:5000/api/current-user", {
+      const response = await axios.get("https://codearena-u4dp.onrender.com/api/current-user", {
         withCredentials: true
       });
 
@@ -114,7 +114,7 @@ const Dashboard = () => {
 
   const fetchLanguages = async () => {
     try {
-      const response = await axios.get("http://localhost:5000/api/languages");
+      const response = await axios.get("https://codearena-u4dp.onrender.com/api/languages");
       if (response.data && Array.isArray(response.data)) {
         setLanguages(response.data);
       }

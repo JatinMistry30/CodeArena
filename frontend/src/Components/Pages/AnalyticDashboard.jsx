@@ -30,7 +30,7 @@ const AnalyticsDashboard = () => {
       setIsLoading(true);
       setError(null);
       
-      const response = await fetch('http://localhost:5000/api/analytics', {
+      const response = await fetch('https://codearena-u4dp.onrender.com/api/analytics', {
         method: 'GET',
         credentials: 'include',
         headers: {

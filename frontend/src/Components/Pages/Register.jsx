@@ -76,7 +76,7 @@ const Register = () => {
     setIsSubmitting(true);
 
     try {
-      const res = await fetch("http://localhost:5000/api/register", {
+      const res = await fetch("https://codearena-u4dp.onrender.com/api/register", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"

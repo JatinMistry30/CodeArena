@@ -9,7 +9,7 @@ export const SocketProvider = ({ children }) => {
 
   useEffect(() => {
     // Initialize socket connection
-    const newSocket = io('http://localhost:5000', {
+    const newSocket = io('https://codearena-u4dp.onrender.com', {
       withCredentials: true,
       autoConnect: false, // We'll connect manually
     });
