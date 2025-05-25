@@ -35,7 +35,16 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(
   cors({
-    origin: process.env.CLIENT_URL,
+    origin: (origin, callback) => {
+      console.log('Request origin:', origin);
+      console.log('Allowed CLIENT_URL:', process.env.CLIENT_URL);
+      
+      if (!origin || origin === process.env.CLIENT_URL) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
     credentials: true,
   })
 );

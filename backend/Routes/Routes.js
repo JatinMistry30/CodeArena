@@ -53,6 +53,7 @@ export const login = async (req, res) => {
       .status(400)
       .json({ error: "Email and password are required" });
   }
+  
   try {
     db.query(
       "SELECT * FROM users WHERE email = ?",
@@ -79,12 +80,15 @@ export const login = async (req, res) => {
           JWT_SECRET,
           { expiresIn: "24h" }
         );
+        
+        // Updated cookie settings for cross-origin
         res.cookie("auth_token", token, {
           httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: "strict",
+          secure: true, // Always true for production HTTPS
+          sameSite: "none", // Changed from "strict" to "none" for cross-origin
           maxAge: COOKIE_MAX_AGE,
         });
+        
         res.status(200).json({
           message: "Login successful",
           user: {
