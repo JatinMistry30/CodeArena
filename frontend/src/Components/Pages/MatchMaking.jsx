@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import MonacoEditor from '@monaco-editor/react';
 import { useSocket } from './SocketContext';
+import { useNavigate } from 'react-router-dom';
+import Confetti from 'react-confetti';
 
 const MatchArena = ({ match, onBackToMatchmaking }) => {
   const [currentQuestion, setCurrentQuestion] = useState(null);
@@ -20,11 +22,33 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
   const [questionNumber, setQuestionNumber] = useState(1);
   const [totalQuestions] = useState(5);
   const [pulseAnimation, setPulseAnimation] = useState(false);
+  const [windowSize, setWindowSize] = useState({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  });
+  const [showConfetti, setShowConfetti] = useState(false);
+  const [leavePenalty, setLeavePenalty] = useState(0);
+  const [opponentLeft, setOpponentLeft] = useState(false);
   const editorRef = useRef(null);
   const timerRef = useRef(null);
+  const navigate = useNavigate();
   
   const socket = useSocket();
 
+  // Handle window resize
+  useEffect(() => {
+    const handleResize = () => {
+      setWindowSize({
+        width: window.innerWidth,
+        height: window.innerHeight,
+      });
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Main socket effect
   useEffect(() => {
     if (!socket || !match) {
       console.error('Socket or match not available');
@@ -56,6 +80,11 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
     };
 
     const onNextQuestion = (data) => {
+      if (questionNumber >= totalQuestions) {
+        socket.emit('endMatch', { matchId: match.matchId });
+        return;
+      }
+      
       setCurrentQuestion(data.question);
       setScores(data.scores);
       setCode('');
@@ -64,18 +93,26 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
       setQuestionNumber(prev => prev + 1);
       setQuestionsAttempted(prev => prev + 1);
       triggerPulse();
+      setIsSubmitting(false);
     };
 
     const onPlayerDisconnected = (data) => {
+      setOpponentLeft(true);
       setConnectionStatus('disconnected');
       setMatchStatus('opponent_left');
+      
+      // Apply penalty to disconnected player and bonus to current user
+      const bonusPoints = 500;
+      setLeavePenalty(bonusPoints);
+      
       setTimeout(() => {
         setMatchStatus('ended');
         setWinnerId(user.userId);
         setScores(prev => ({
           ...prev,
-          [user.userId]: (prev[user.userId] || 0) + 500
+          [user.userId]: (prev[user.userId] || 0) + bonusPoints
         }));
+        setShowConfetti(true);
       }, 3000);
     };
 
@@ -105,6 +142,18 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
           ...prev,
           [currentUser.userId]: (prev[currentUser.userId] || 0) + userScore
         }));
+
+        // Automatically move to next question after 3 seconds
+        setTimeout(() => {
+          if (questionNumber < totalQuestions) {
+            socket.emit('requestNextQuestion', { 
+              matchId: match.matchId,
+              currentQuestionNumber: questionNumber
+            });
+          } else {
+            socket.emit('endMatch', { matchId: match.matchId });
+          }
+        }, 3000);
       }
     };
 
@@ -114,6 +163,7 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
       setScores(data.finalScores);
       setWinnerId(data.winnerId);
       setIsDraw(data.isDraw);
+      setShowConfetti(true);
       
       const matchHistory = JSON.parse(localStorage.getItem('matchHistory') || '[]');
       matchHistory.unshift({
@@ -123,7 +173,8 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
         scores: data.finalScores,
         winnerId: data.winnerId,
         isDraw: data.isDraw,
-        questionsAttempted: questionsAttempted + 1
+        questionsAttempted: questionsAttempted + 1,
+        duration: 600 - timeLeft
       });
       localStorage.setItem('matchHistory', JSON.stringify(matchHistory));
     };
@@ -153,7 +204,7 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
         clearInterval(timerRef.current);
       }
     };
-  }, [socket, match, onBackToMatchmaking, questionsAttempted, currentQuestion]);
+  }, [socket, match, onBackToMatchmaking, questionsAttempted, currentQuestion, questionNumber, totalQuestions]);
 
   const triggerPulse = () => {
     setPulseAnimation(true);
@@ -197,6 +248,7 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
       setTimeLeft(prev => {
         if (prev <= 1) {
           clearInterval(timerRef.current);
+          socket.emit('endMatch', { matchId: match.matchId });
           return 0;
         }
         return prev - 1;
@@ -254,6 +306,24 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
     ];
   };
 
+  const handleLeaveMatch = () => {
+    if (window.confirm('Are you sure you want to leave the match? You will lose 200 points and your opponent will gain them.')) {
+      const penalty = 200;
+      const opponent = getOpponent();
+      
+      if (opponent) {
+        socket.emit('playerLeft', {
+          matchId: match.matchId,
+          userId: currentUser.userId,
+          opponentId: opponent.userId,
+          penalty
+        });
+      }
+      
+      navigate('/matchmaking');
+    }
+  };
+
   const renderStatusIndicator = () => {
     const getStatusInfo = () => {
       switch (submissionStatus) {
@@ -284,6 +354,12 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
               <span>You: {submissionStatus || 'Coding'}</span>
               <span>•</span>
               <span>Opponent: {opponentStatus}</span>
+              {questionNumber > 1 && (
+                <>
+                  <span>•</span>
+                  <span>Progress: {questionNumber-1}/{totalQuestions}</span>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -298,8 +374,8 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
       <div className={`bg-gray-800 p-6 rounded-lg mb-6 transform transition-all duration-500 ${
         pulseAnimation ? 'scale-105 shadow-2xl' : 'scale-100'
       }`}>
-        <div className="flex justify-between items-start mb-4">
-          <div>
+        <div className="flex flex-col md:flex-row md:justify-between md:items-start mb-4 gap-4">
+          <div className="flex-1">
             <h2 className="text-2xl font-bold text-white mb-2">{currentQuestion.title}</h2>
             <div className="flex items-center space-x-3">
               <span className={`px-3 py-1 rounded-full text-sm font-medium ${
@@ -330,14 +406,14 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
             <div className="space-y-3">
               {currentQuestion.examples?.map((example, i) => (
                 <div key={i} className="bg-gray-900 p-4 rounded-lg border border-gray-700">
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <span className="text-sm font-medium text-gray-400">Input:</span>
-                      <pre className="text-green-400 mt-1">{example.input}</pre>
+                      <pre className="text-green-400 mt-1 overflow-x-auto">{example.input}</pre>
                     </div>
                     <div>
                       <span className="text-sm font-medium text-gray-400">Output:</span>
-                      <pre className="text-blue-400 mt-1">{example.output}</pre>
+                      <pre className="text-blue-400 mt-1 overflow-x-auto">{example.output}</pre>
                     </div>
                   </div>
                 </div>
@@ -354,11 +430,11 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
                   <div className="space-y-2">
                     <div>
                       <span className="text-xs text-gray-500">Input:</span>
-                      <pre className="text-green-400 text-sm">{testCase.input}</pre>
+                      <pre className="text-green-400 text-sm overflow-x-auto">{testCase.input}</pre>
                     </div>
                     <div>
                       <span className="text-xs text-gray-500">Expected:</span>
-                      <pre className="text-blue-400 text-sm">{testCase.output}</pre>
+                      <pre className="text-blue-400 text-sm overflow-x-auto">{testCase.output}</pre>
                     </div>
                   </div>
                 </div>
@@ -373,7 +449,7 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
   const renderEditor = () => {
     return (
       <div className="bg-gray-800 rounded-lg overflow-hidden shadow-2xl">
-        <div className="flex justify-between items-center bg-gray-700 px-6 py-3 border-b border-gray-600">
+        <div className="flex flex-col sm:flex-row justify-between items-center bg-gray-700 px-6 py-3 border-b border-gray-600 gap-2">
           <div className="flex items-center space-x-3">
             <div className="w-3 h-3 bg-red-500 rounded-full"></div>
             <div className="w-3 h-3 bg-yellow-500 rounded-full"></div>
@@ -454,7 +530,9 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
             </div>
             
             {opponent && (
-              <div className="bg-gradient-to-r from-gray-900/40 to-gray-800/40 p-4 rounded-lg border border-gray-600">
+              <div className={`bg-gradient-to-r from-gray-900/40 to-gray-800/40 p-4 rounded-lg border ${
+                opponentLeft ? 'border-red-500/30' : 'border-gray-600'
+              }`}>
                 <div className="flex justify-between items-center mb-3">
                   <div className="flex items-center space-x-3">
                     <div className="w-10 h-10 bg-gray-500 rounded-full flex items-center justify-center font-bold">
@@ -470,6 +548,11 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
                     style={{ width: `${Math.min(100, (scores[opponent.userId] || 0) / 20)}%` }}
                   ></div>
                 </div>
+                {opponentLeft && (
+                  <div className="mt-2 text-xs text-red-400">
+                    Opponent left! +{leavePenalty} points awarded to you
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -510,6 +593,10 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
             <div className="flex justify-between">
               <span className="text-gray-400">Language</span>
               <span className="font-bold text-white">{match.language}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Time Elapsed</span>
+              <span className="font-bold text-white">{formatTime(600 - timeLeft)}</span>
             </div>
           </div>
         </div>
@@ -572,15 +659,28 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
   if (matchStatus === 'opponent_left') {
     return (
       <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
+        {showConfetti && (
+          <Confetti
+            width={windowSize.width}
+            height={windowSize.height}
+            recycle={false}
+            numberOfPieces={500}
+          />
+        )}
         <div className="text-center">
           <div className="w-20 h-20 text-6xl mb-6">🏆</div>
           <h2 className="text-3xl font-bold text-green-400 mb-4">You Win!</h2>
           <p className="text-gray-300 mb-6">Your opponent has left the match</p>
           <div className="bg-gray-800 p-6 rounded-lg mb-6">
             <div className="text-lg font-bold text-orange-400 mb-2">Bonus Points Awarded</div>
-            <div className="text-3xl font-bold text-green-400">+500</div>
+            <div className="text-3xl font-bold text-green-400">+{leavePenalty}</div>
           </div>
-          <div className="text-sm text-gray-400">Redirecting to results...</div>
+          <button
+            onClick={onBackToMatchmaking}
+            className="bg-orange-500 hover:bg-orange-600 px-8 py-3 rounded-lg font-bold transition-colors duration-200"
+          >
+            Continue to Results
+          </button>
         </div>
       </div>
     );
@@ -594,12 +694,20 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
     
     return (
       <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
-        <div className="bg-gray-800 rounded-2xl p-10 max-w-lg w-full shadow-2xl">
+        {showConfetti && (
+          <Confetti
+            width={windowSize.width}
+            height={windowSize.height}
+            recycle={false}
+            numberOfPieces={500}
+          />
+        )}
+        <div className="bg-gray-800 rounded-2xl p-6 md:p-10 max-w-lg w-full shadow-2xl mx-4">
           <div className="text-center mb-8">
             <div className="text-6xl mb-4">
               {isDraw ? '🤝' : isUserWinner ? '🏆' : '🎯'}
             </div>
-            <h1 className={`text-4xl font-bold mb-4 ${
+            <h1 className={`text-3xl md:text-4xl font-bold mb-4 ${
               isDraw ? 'text-yellow-400' : 
               isUserWinner ? 'text-green-400' : 'text-orange-400'
             }`}>
@@ -612,12 +720,16 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
             <div className="bg-gray-700 p-6 rounded-xl">
               <h3 className="text-xl font-bold text-center mb-6 text-orange-400">Final Scoreboard</h3>
               <div className="space-y-4">
-                <div className="flex justify-between items-center p-3 bg-gray-600 rounded-lg">
+                <div className={`flex justify-between items-center p-3 rounded-lg ${
+                  isUserWinner ? 'bg-gradient-to-r from-green-900/30 to-green-800/30 border border-green-500/30' : 'bg-gray-600'
+                }`}>
                   <span className="font-medium">{currentUser.username || 'You'}</span>
                   <span className="text-2xl font-bold text-orange-400">{userScore}</span>
                 </div>
                 {opponent && (
-                  <div className="flex justify-between items-center p-3 bg-gray-600 rounded-lg">
+                  <div className={`flex justify-between items-center p-3 rounded-lg ${
+                    !isUserWinner && !isDraw ? 'bg-gradient-to-r from-red-900/30 to-red-800/30 border border-red-500/30' : 'bg-gray-600'
+                  }`}>
                     <span className="font-medium">{opponent.username || 'Opponent'}</span>
                     <span className="text-2xl font-bold text-gray-400">{opponentScore}</span>
                   </div>
@@ -632,8 +744,8 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
                   <div className="text-sm text-gray-400">Questions Solved</div>
                 </div>
                 <div>
-                  <div className="text-2xl font-bold text-orange-400">{match.language}</div>
-                  <div className="text-sm text-gray-400">Language Used</div>
+                  <div className="text-2xl font-bold text-orange-400">{formatTime(600 - timeLeft)}</div>
+                  <div className="text-sm text-gray-400">Time Taken</div>
                 </div>
               </div>
             </div>
@@ -652,43 +764,51 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
 
   return (
     <div className="min-h-screen bg-gray-900 text-white">
+      {showConfetti && (
+        <Confetti
+          width={windowSize.width}
+          height={windowSize.height}
+          recycle={false}
+          numberOfPieces={500}
+        />
+      )}
       <div className="bg-gray-800 border-b border-gray-700 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-6 py-4">
-          <div className="flex justify-between items-center">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3">
+          <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
             <div className="flex items-center space-x-4">
-              <h1 className="text-2xl font-bold text-orange-400">CodeArena</h1>
+              <h1 className="text-xl sm:text-2xl font-bold text-orange-400">CodeArena</h1>
               <div className="flex items-center space-x-2">
                 <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
                 <span className="text-sm text-gray-300">Live Match</span>
               </div>
             </div>
-            <div className="flex items-center space-x-4">
-              <div className="bg-gray-700 px-4 py-2 rounded-full text-sm font-medium">
+            <div className="flex items-center space-x-2 sm:space-x-4">
+              <div className="bg-gray-700 px-3 py-1 sm:px-4 sm:py-2 rounded-full text-xs sm:text-sm font-medium">
                 {match.language}
               </div>
-              <div className="bg-gray-700 px-4 py-2 rounded-full text-sm font-medium">
+              <div className="bg-gray-700 px-3 py-1 sm:px-4 sm:py-2 rounded-full text-xs sm:text-sm font-medium">
                 vs {getOpponent()?.username || 'Opponent'}
               </div>
               <button
-                onClick={onBackToMatchmaking}
-                className="bg-red-600 hover:bg-red-700 px-6 py-2 rounded-lg text-sm font-medium transition-colors duration-200"
+                onClick={handleLeaveMatch}
+                className="bg-red-600 hover:bg-red-700 px-4 py-1 sm:px-6 sm:py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors duration-200"
               >
-                Leave Match
+                Leave Match (-200)
               </button>
             </div>
           </div>
         </div>
       </div>
       
-      <div className="max-w-7xl mx-auto p-6">
-        <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
-          <div className="xl:col-span-3 space-y-6">
+      <div className="max-w-7xl mx-auto p-4 sm:p-6">
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+          <div className="lg:col-span-3 space-y-6">
             {renderStatusIndicator()}
             {renderQuestion()}
             {renderEditor()}
           </div>
           
-          <div className="xl:col-span-1">
+          <div className="lg:col-span-1">
             {renderScoreboard()}
           </div>
         </div>
