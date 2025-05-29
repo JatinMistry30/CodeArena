@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useRef , useCallback} from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import MonacoEditor from "@monaco-editor/react";
 import { useSocket } from "./SocketContext";
 import { useNavigate } from "react-router-dom";
 import Confetti from "react-confetti";
 
 const MatchArena = ({ match, onBackToMatchmaking }) => {
+  // State declarations
   const [currentQuestion, setCurrentQuestion] = useState(null);
   const [code, setCode] = useState("");
   const [scores, setScores] = useState({});
@@ -31,13 +32,98 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
   const [showConfetti, setShowConfetti] = useState(false);
   const [leavePenalty, setLeavePenalty] = useState(0);
   const [opponentLeft, setOpponentLeft] = useState(false);
+  
+  // Refs
   const editorRef = useRef(null);
   const timerRef = useRef(null);
   const navigate = useNavigate();
-
   const socket = useSocket();
 
-  // Handle window resize
+  // Event handlers
+  const onPlayerDisconnected = useCallback((data) => {
+    setOpponentLeft(true);
+    setLeavePenalty(data.penalty || 200);
+    setOpponentStatus("disconnected");
+    setMatchStatus("opponent_left");
+    setScores(prev => ({
+      ...prev,
+      [currentUser.userId]: (prev[currentUser.userId] || 0) + (data.penalty || 200)
+    }));
+  }, [currentUser]);
+
+  const onSubmissionReceived = useCallback((data) => {
+    if (data.userId !== currentUser?.userId) {
+      setOpponentStatus("submitted");
+    }
+  }, [currentUser]);
+
+  // Helper functions
+  const calculateScore = useCallback((
+    basePoints,
+    accuracy,
+    submissionTimestamp,
+    difficulty
+  ) => {
+    const timeFactor = calculateTimeFactor(submissionTimestamp);
+    const accuracyFactor = accuracy / 100;
+    const difficultyMultiplier = getDifficultyMultiplier(difficulty);
+
+    return Math.round(
+      basePoints * timeFactor * accuracyFactor * difficultyMultiplier
+    );
+  }, []);
+
+  const calculateTimeFactor = useCallback((submissionTimestamp) => {
+    if (!submissionTimestamp) return 1;
+    const timeTaken = (Date.now() - submissionTimestamp) / 1000;
+    const maxTime = 600;
+    const timePercentage = Math.max(0, 1 - timeTaken / maxTime);
+    return 0.5 + timePercentage;
+  }, []);
+
+  const getDifficultyMultiplier = useCallback((difficulty) => {
+    switch (difficulty) {
+      case "easy": return 1;
+      case "medium": return 1.5;
+      case "hard": return 2.5;
+      default: return 1;
+    }
+  }, []);
+
+  const startTimer = useCallback(() => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+    }
+
+    timerRef.current = setInterval(() => {
+      setTimeLeft((prev) => {
+        if (prev <= 1) {
+          clearInterval(timerRef.current);
+          socket.emit("endMatch", { matchId: match.matchId });
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  }, [socket, match?.matchId]);
+
+  const formatTime = useCallback((seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
+  }, []);
+
+  const getOpponent = useCallback(() => {
+    if (!currentUser || !players) return null;
+    return Object.values(players).find((p) => p.userId !== currentUser.userId);
+  }, [currentUser, players]);
+
+  const triggerPulse = useCallback(() => {
+    setPulseAnimation(true);
+    setTimeout(() => setPulseAnimation(false), 1000);
+  }, []);
+
+  // Effects
   useEffect(() => {
     const handleResize = () => {
       setWindowSize({
@@ -50,7 +136,6 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  // Main socket effect
   useEffect(() => {
     if (!socket || !match) {
       console.error("Socket or match not available");
@@ -58,7 +143,7 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
       return;
     }
 
-    const user = match.users.find((u) => u.socketId === socket.id);
+    const user = match.users?.find((u) => u.socketId === socket.id);
     if (!user) {
       console.error("Current user not found in match participants");
       onBackToMatchmaking();
@@ -74,11 +159,11 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
 
     const onMatchReady = (data) => {
       setCurrentQuestion(data.question);
-      setPlayers(data.participants);
+      setPlayers(data.participants || {});
       setMatchStatus("active");
       setQuestionNumber(1);
       if (!timerInitialized) {
-        setTimeLeft(600); // Reset timer to 10 minutes
+        setTimeLeft(600);
         startTimer();
         setTimerInitialized(true);
       }
@@ -87,7 +172,7 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
 
     const onNextQuestion = (data) => {
       setCurrentQuestion(data.question);
-      setScores(data.scores);
+      setScores(data.scores || {});
       setCode("");
       setSubmissionStatus(null);
       setOpponentStatus("coding");
@@ -105,9 +190,9 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
       if (data.results && currentUser) {
         const userScore = calculateScore(
           data.results[currentUser.userId] || 0,
-          data.accuracy,
+          data.accuracy || 100,
           data.submissionTime,
-          currentQuestion.difficulty
+          currentQuestion?.difficulty || "medium"
         );
 
         setScores((prev) => ({
@@ -115,7 +200,6 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
           [currentUser.userId]: (prev[currentUser.userId] || 0) + userScore,
         }));
 
-        // Move to next question or end match
         setTimeout(() => {
           if (questionNumber < totalQuestions) {
             socket.emit("requestNextQuestion", {
@@ -132,16 +216,16 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
     const onMatchEnded = (data) => {
       clearInterval(timerRef.current);
       setMatchStatus("ended");
-      setScores(data.finalScores);
-      setWinnerId(data.winnerId);
-      setIsDraw(data.isDraw);
+      setScores(data.finalScores || {});
+      setWinnerId(data.winnerId || null);
+      setIsDraw(data.isDraw || false);
       setShowConfetti(data.winnerId === currentUser?.userId || data.isDraw);
 
       const newMatchRecord = {
         matchId: match.matchId,
         date: new Date().toISOString(),
         language: match.language,
-        scores: data.finalScores,
+        scores: data.finalScores || {},
         winnerId: data.winnerId,
         isDraw: data.isDraw,
         questionsAttempted: questionsAttempted + 1,
@@ -176,69 +260,24 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
         clearInterval(timerRef.current);
       }
     };
-    // REMOVE questionNumber and currentQuestion from dependencies - these cause infinite loops
-  }, [socket, match, onBackToMatchmaking, totalQuestions]);
+  }, [
+    socket, 
+    match, 
+    onBackToMatchmaking, 
+    totalQuestions,
+    currentUser,
+    calculateScore,
+    onPlayerDisconnected,
+    onSubmissionReceived,
+    questionNumber,
+    startTimer,
+    timerInitialized,
+    timeLeft,
+    questionsAttempted,
+    triggerPulse
+  ]);
 
-  const triggerPulse = () => {
-    setPulseAnimation(true);
-    setTimeout(() => setPulseAnimation(false), 1000);
-  };
-
-  const calculateScore = (
-    basePoints,
-    accuracy,
-    submissionTimestamp,
-    difficulty
-  ) => {
-    const timeFactor = calculateTimeFactor(submissionTimestamp);
-    const accuracyFactor = accuracy / 100;
-    const difficultyMultiplier = getDifficultyMultiplier(difficulty);
-
-    return Math.round(
-      basePoints * timeFactor * accuracyFactor * difficultyMultiplier
-    );
-  };
-
-  const calculateTimeFactor = (submissionTimestamp) => {
-    if (!submissionTimestamp) return 1;
-
-    const timeTaken = (Date.now() - submissionTimestamp) / 1000;
-    const maxTime = 600;
-    const timePercentage = Math.max(0, 1 - timeTaken / maxTime);
-
-    return 0.5 + timePercentage;
-  };
-
-  const getDifficultyMultiplier = (difficulty) => {
-    switch (difficulty) {
-      case "easy":
-        return 1;
-      case "medium":
-        return 1.5;
-      case "hard":
-        return 2.5;
-      default:
-        return 1;
-    }
-  };
-
-  const startTimer = useCallback(() => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-    }
-
-    timerRef.current = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          clearInterval(timerRef.current);
-          socket.emit("endMatch", { matchId: match.matchId });
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-  }, [socket, match.matchId]);
-
+  // Component functions
   const handleEditorDidMount = (editor) => {
     editorRef.current = editor;
   };
@@ -268,48 +307,10 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
     }, 1500);
   };
 
-  const formatTime = (seconds) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
-  };
-
-  const getOpponent = () => {
-    if (!currentUser) return null;
-    return Object.values(players).find((p) => p.userId !== currentUser.userId);
-  };
-
-  const getPointRules = () => {
-    return [
-      { rule: "Base Points", easy: "100", medium: "150", hard: "250" },
-      {
-        rule: "Speed Bonus",
-        easy: "0.5x-1.5x",
-        medium: "0.5x-1.5x",
-        hard: "0.5x-1.5x",
-      },
-      {
-        rule: "Difficulty Multiplier",
-        easy: "1x",
-        medium: "1.5x",
-        hard: "2.5x",
-      },
-      {
-        rule: "Accuracy Factor",
-        easy: "0-100%",
-        medium: "0-100%",
-        hard: "0-100%",
-      },
-      { rule: "Opponent Leaves", easy: "+500", medium: "+500", hard: "+500" },
-    ];
-  };
-
   const handleLeaveMatch = () => {
-    if (
-      window.confirm(
-        "Are you sure you want to leave the match? You will lose 200 points and your opponent will gain them."
-      )
-    ) {
+    if (window.confirm(
+      "Are you sure you want to leave the match? You will lose 200 points and your opponent will gain them."
+    )) {
       const penalty = 200;
       const opponent = getOpponent();
 
@@ -326,6 +327,17 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
     }
   };
 
+  const getPointRules = () => {
+    return [
+      { rule: "Base Points", easy: "100", medium: "150", hard: "250" },
+      { rule: "Speed Bonus", easy: "0.5x-1.5x", medium: "0.5x-1.5x", hard: "0.5x-1.5x" },
+      { rule: "Difficulty Multiplier", easy: "1x", medium: "1.5x", hard: "2.5x" },
+      { rule: "Accuracy Factor", easy: "0-100%", medium: "0-100%", hard: "0-100%" },
+      { rule: "Opponent Leaves", easy: "+500", medium: "+500", hard: "+500" },
+    ];
+  };
+
+  // Render functions
   const renderStatusIndicator = () => {
     const getStatusInfo = () => {
       switch (submissionStatus) {
@@ -720,6 +732,7 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
     );
   };
 
+  // Main render logic
   if (!currentUser) {
     return (
       <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
@@ -804,8 +817,7 @@ const MatchArena = ({ match, onBackToMatchmaking }) => {
 
     return (
       <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
-        {/* Only show confetti if user won or it's a draw */}
-        {showConfetti && (isUserWinner || isDraw) && (
+        {(showConfetti && (isUserWinner || isDraw)) && (
           <Confetti
             width={windowSize.width}
             height={windowSize.height}
