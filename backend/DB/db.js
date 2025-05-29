@@ -10,5 +10,13 @@ export const db = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 100, // adjust based on your needs
   queueLimit: 0
-}).promise();
+});
 
+// Test the connection using a simple query
+db.query('SELECT 1', (err, results) => {
+  if (err) {
+    console.error('MySQL connection error:', err);
+  } else {
+    console.log('Connected to MySQL database');
+  }
+});
